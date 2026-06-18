@@ -8,9 +8,11 @@ import { zodTextFormat } from "openai/helpers/zod";
 import { z } from "zod";
 
 const PORT = Number(process.env.PORT || 4173);
-const MODEL = process.env.OPENAI_MODEL || "gpt-5.5";
 const MAX_PAGES = Number(process.env.MAX_BILL_PAGES || 12);
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE_BYTES || 12 * 1024 * 1024);
+const FALLBACK_MODEL_ID = process.env.OPENAI_MODEL || "gpt-5.5";
+const MODELS = parseModelOptions(process.env.OPENAI_MODEL_OPTIONS, FALLBACK_MODEL_ID);
+const DEFAULT_MODEL = chooseDefaultModel(process.env.OPENAI_MODEL, MODELS);
 
 const app = express();
 const ROOT = process.cwd();
@@ -63,7 +65,8 @@ app.get("/app.js", (_req, res) => {
 
 app.get("/api/config", (_req, res) => {
   res.json({
-    model: MODEL,
+    model: DEFAULT_MODEL.id,
+    models: MODELS,
     maxPages: MAX_PAGES,
     maxFileSize: MAX_FILE_SIZE,
     openaiConfigured: Boolean(process.env.OPENAI_API_KEY),
@@ -85,6 +88,8 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
 
     const rulesText = String(req.body.rulesText || "").trim();
     const extractText = String(req.body.extractText || "").trim();
+    const requestedModel = String(req.body.model || "").trim();
+    const selectedModel = modelById(requestedModel) || DEFAULT_MODEL;
     const pageNames = pages.map((file) => file.originalname).join(", ");
 
     const content = [
@@ -111,7 +116,7 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
     ];
 
     const response = await openai.responses.parse({
-      model: MODEL,
+      model: selectedModel.id,
       input: [
         {
           role: "system",
@@ -141,7 +146,7 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         confidence: parsed.confidence,
         notes: parsed.notes || "",
       },
-      model: MODEL,
+      model: selectedModel.id,
       pageCount: pages.length,
       fileName: pages.length === 1 ? pages[0].originalname : `${pages[0].originalname} + ${pages.length - 1} page(s)`,
     });
@@ -171,6 +176,40 @@ function fileToOpenAIContent(file) {
     filename: file.originalname,
     file_data: `data:${file.mimetype};base64,${base64}`,
   };
+}
+
+function parseModelOptions(raw, fallbackModelId) {
+  const rows = String(raw || "")
+    .split(";")
+    .map((row) => row.trim())
+    .filter(Boolean);
+
+  const parsed = rows
+    .map((row) => {
+      const [id, meta = ""] = row.split("|").map((part) => part.trim());
+      if (!id) return null;
+      return {
+        id,
+        meta,
+      };
+    })
+    .filter(Boolean);
+
+  if (parsed.length) return parsed;
+  return [
+    {
+      id: fallbackModelId,
+      meta: "Configured by OPENAI_MODEL",
+    },
+  ];
+}
+
+function chooseDefaultModel(id, models) {
+  return modelById(id, models) || models[0];
+}
+
+function modelById(id, models = MODELS) {
+  return models.find((model) => model.id === id);
 }
 
 app.listen(PORT, () => {

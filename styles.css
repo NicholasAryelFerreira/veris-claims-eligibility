@@ -240,19 +240,6 @@ button:focus-visible {
   margin-top: 2px;
 }
 
-.model-option em {
-  color: var(--quiet);
-  flex: none;
-  font-size: 10px;
-  font-style: normal;
-  font-weight: 700;
-  margin-top: 2px;
-}
-
-.model-option.active em {
-  color: var(--green);
-}
-
 .secondary-button {
   background: var(--panel);
   border: 1px solid var(--line-strong);

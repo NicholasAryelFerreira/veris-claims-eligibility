@@ -29,7 +29,17 @@ OpenAI-backed implementation of the medical bill eligibility analyzer handoff. T
    http://localhost:4173
    ```
 
-The backend reads `OPENAI_API_KEY` and `OPENAI_MODEL` from `.env`. Keep `.env` local; it is ignored by git.
+The backend reads OpenAI settings from `.env`. Keep `.env` local; it is ignored by git.
+
+Use this shape for the model menu:
+
+```text
+OPENAI_API_KEY=your-secret-key
+OPENAI_MODEL=gpt-5.4-nano
+OPENAI_MODEL_OPTIONS=gpt-5.5|Highest accuracy - slower;gpt-5.4-mini|Fast - high accuracy;gpt-5.4-nano|Lowest cost - fastest
+```
+
+Each model option is `model-id|Description`, and options are separated with semicolons. The UI displays the model ID as the label. `OPENAI_MODEL` must match one of the option IDs to choose the default selected model.
 
 ## Included behavior
 

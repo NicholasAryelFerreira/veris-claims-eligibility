@@ -18,12 +18,6 @@ const ALL_KEYS = [
   "discounts",
 ];
 
-const MODELS = [
-  { id: "gpt-5.5", name: "GPT-5.5", meta: "Highest accuracy - slower", tag: "Best", confidence: 98.5 },
-  { id: "gpt-5.4-mini", name: "GPT-5.4 mini", meta: "Fast - high accuracy", tag: "Balanced", confidence: 96.2 },
-  { id: "gpt-5.4-nano", name: "GPT-5.4 nano", meta: "Lowest cost - fastest", tag: "Fast", confidence: 91.5 },
-];
-
 const state = {
   uid: 100,
   poolIdx: 0,
@@ -129,8 +123,8 @@ const state = {
   ],
   selectedId: "b1",
   filter: "all",
-  model: "gpt-5.5",
-  serverModel: null,
+  model: "",
+  models: [],
   rulesText:
     "Patient name must be present\nProvider name must be present\nDate of service must be present\nSupplements are not covered\nCosmetic procedures are not covered",
   extractText:
@@ -194,11 +188,22 @@ function formatDate(value) {
 }
 
 function modelInfo() {
-  if (state.serverModel) {
-    const known = MODELS.find((model) => model.id === state.serverModel);
-    return known || { id: state.serverModel, name: state.serverModel, meta: "Configured on server", tag: "Server", confidence: 96 };
-  }
-  return MODELS.find((model) => model.id === state.model) || MODELS[0];
+  return state.models.find((model) => model.id === state.model) || state.models[0] || {
+    id: "",
+    meta: "Loading model options from server...",
+  };
+}
+
+function modelLabel(model = modelInfo()) {
+  return model.id || "Loading model...";
+}
+
+function modelDescription(model = modelInfo()) {
+  return model.meta || "Configured in .env";
+}
+
+function fieldConfidenceBase() {
+  return 96;
 }
 
 function fieldLabel(key) {
@@ -216,7 +221,7 @@ function confidenceFor(bill, key) {
   if (key === "__overall" && Number.isFinite(Number(bill.confidence))) {
     return Number(bill.confidence).toFixed(1);
   }
-  const base = modelInfo().confidence;
+  const base = fieldConfidenceBase();
   let hash = 0;
   const input = `${bill.id || ""}${key}`;
   for (let index = 0; index < input.length; index += 1) {
@@ -418,21 +423,20 @@ function visibleBills(evaluated) {
 }
 
 function renderModelMenu() {
-  elements.currentModel.textContent = modelInfo().name;
+  elements.currentModel.textContent = modelLabel();
   elements.modelToggle.setAttribute("aria-expanded", String(state.modelMenuOpen));
   elements.modelBackdrop.classList.toggle("hidden", !state.modelMenuOpen);
   elements.modelMenu.classList.toggle("hidden", !state.modelMenuOpen);
   elements.modelMenu.innerHTML = `
-    <div class="menu-label">${state.serverModel ? "Server OpenAI model" : "OpenAI model"}</div>
-    ${MODELS.map(
+    <div class="menu-label">Server OpenAI models</div>
+    ${state.models.map(
       (model) => `
         <button class="model-option ${model.id === state.model ? "active" : ""}" type="button" data-model="${model.id}">
           <span class="option-dot"></span>
           <span>
-            <strong>${escapeHtml(model.name)}</strong>
-            <small>${escapeHtml(model.meta)}</small>
+            <strong>${escapeHtml(modelLabel(model))}</strong>
+            <small>${escapeHtml(modelDescription(model))}</small>
           </span>
-          <em>${escapeHtml(model.tag)}</em>
         </button>
       `
     ).join("")}
@@ -499,7 +503,7 @@ function renderProcessing(bill) {
   elements.detailPane.innerHTML = `
     <div class="selection-state">
       <div class="spinner"></div>
-      <strong>Extracting data with ${escapeHtml(modelInfo().name)}...</strong>
+      <strong>Extracting data with ${escapeHtml(modelLabel())}...</strong>
       <span>Reading ${escapeHtml(bill.fileName)} - detecting fields and services</span>
     </div>
   `;
@@ -645,7 +649,7 @@ function renderDetail(evaluated) {
     <div class="selection-header">
       <div class="selection-title">
         <strong>${escapeHtml(bill.fileName)}</strong>
-        <span>Extracted with ${escapeHtml(bill.modelUsed || modelInfo().name)} - ${confidenceFor(bill, "__overall")}% overall confidence</span>
+        <span>Extracted with ${escapeHtml(bill.modelUsed || modelLabel())} - ${confidenceFor(bill, "__overall")}% overall confidence</span>
       </div>
       <div class="header-fill"></div>
       <span class="status-pill" style="color:${status.color};background:${status.bg}">
@@ -789,6 +793,7 @@ async function analyzeBill(id, pages) {
   pages.forEach((page) => formData.append("pages", page, page.name));
   formData.append("rulesText", state.rulesText);
   formData.append("extractText", state.extractText);
+  formData.append("model", state.model);
 
   try {
     const response = await fetch("/api/analyze-bill", {
@@ -800,7 +805,6 @@ async function analyzeBill(id, pages) {
       throw new Error(payload.error || "OpenAI analysis failed.");
     }
 
-    state.serverModel = payload.model || state.serverModel;
     state.bills = state.bills.map((bill) =>
       bill.id === id
         ? {
@@ -849,7 +853,7 @@ function exportCsv() {
       ...cells,
       bill.flags.length ? "Flagged" : "Eligible",
       bill.flags.map((flag) => flag.label).join(" | "),
-      bill.modelUsed || modelInfo().name,
+      bill.modelUsed || modelLabel(),
     ]);
   });
 
@@ -891,10 +895,9 @@ function bindEvents() {
     const button = event.target.closest("[data-model]");
     if (!button) return;
     state.model = button.dataset.model;
-    state.serverModel = null;
     state.modelMenuOpen = false;
     render();
-    flash(`Re-analyzing with ${modelInfo().name}...`);
+    flash(`Re-analyzing with ${modelLabel()}...`);
   });
 
   elements.rulesOpen.addEventListener("click", () => {
@@ -1005,10 +1008,12 @@ async function loadServerConfig() {
     if (!response.ok) return;
     const config = await response.json();
     if (config.model) {
-      state.serverModel = config.model;
+      state.models = Array.isArray(config.models) ? config.models : state.models;
+      state.model = config.model;
       render();
     }
   } catch {
     // Opening index.html directly keeps the static demo usable.
   }
 }
+
