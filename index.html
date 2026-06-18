@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Veris Claims Eligibility</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app" class="app-shell">
+      <header class="topbar">
+        <div class="brand" aria-label="Veris Claims Eligibility">
+          <div class="brand-mark"><span></span></div>
+          <div class="brand-copy">
+            <strong>Veris</strong>
+            <span>Claims Eligibility</span>
+          </div>
+        </div>
+
+        <div class="topbar-spacer"></div>
+
+        <div class="model-picker">
+          <button class="model-button" id="model-toggle" type="button" aria-haspopup="menu" aria-expanded="false">
+            <span class="status-dot"></span>
+            <span class="muted">Model</span>
+            <strong id="current-model">GPT-5.5</strong>
+            <span class="chevron">v</span>
+          </button>
+          <div class="model-backdrop hidden" id="model-backdrop"></div>
+          <div class="model-menu hidden" id="model-menu" role="menu"></div>
+        </div>
+
+        <button class="secondary-button" id="rules-open" type="button">
+          <span class="button-icon square-icon" aria-hidden="true"></span>
+          Rules & fields
+        </button>
+        <button class="export-button" id="export-csv" type="button">
+          <span aria-hidden="true">DL</span>
+          Export to Excel
+        </button>
+      </header>
+
+      <main class="workspace">
+        <aside class="bill-sidebar" id="drop-zone">
+          <div class="upload-panel">
+            <button class="drop-card" id="browse-files" type="button">
+              <span class="upload-icon" aria-hidden="true">UP</span>
+              <strong>Drop bill pages to analyze</strong>
+              <span>PDF, JPG or PNG - multiple pages supported</span>
+              <em>Browse files</em>
+            </button>
+            <button class="sample-button" id="sample-batch" type="button">or load a sample batch</button>
+          </div>
+
+          <div class="filters" id="filters"></div>
+          <div class="bill-list" id="bill-list"></div>
+        </aside>
+
+        <section class="detail-pane" id="detail-pane" aria-live="polite"></section>
+      </main>
+
+      <div class="drawer-backdrop hidden" id="drawer-backdrop"></div>
+      <aside class="rules-drawer hidden" id="rules-drawer" aria-label="Analysis instructions">
+        <div class="drawer-header">
+          <div>
+            <h2>Analysis instructions</h2>
+            <p>Plain-language rules & fields - re-runs every bill instantly</p>
+          </div>
+          <button class="icon-button" id="rules-close" type="button" aria-label="Close rules panel">x</button>
+        </div>
+
+        <div class="drawer-body">
+          <label class="drawer-section" for="rules-text">
+            <span>Eligibility rules</span>
+            <small>
+              Write your rules in plain English, one per line. Veris flags any bill that breaks them.
+              Try "supplements are not covered" or "patient name and date of service must be present".
+            </small>
+          </label>
+          <textarea id="rules-text" rows="8" placeholder="One rule per line..."></textarea>
+          <div class="chips" id="rule-preview"></div>
+
+          <hr />
+
+          <label class="drawer-section" for="extract-text">
+            <span>Fields to extract</span>
+            <small>List the fields to pull from each bill, one per line. These become the editable fields.</small>
+          </label>
+          <textarea id="extract-text" rows="6" placeholder="One field per line..."></textarea>
+          <div class="chips" id="extract-preview"></div>
+        </div>
+
+        <div class="drawer-footer">
+          <strong id="flagged-count">0</strong> of <span id="total-count">0</span> bills currently flagged by these rules
+        </div>
+      </aside>
+
+      <div class="toast hidden" id="toast" role="status">
+        <span></span>
+        <p></p>
+      </div>
+
+      <input id="file-input" type="file" multiple accept="image/*,.pdf,application/pdf" hidden />
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
