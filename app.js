@@ -18,6 +18,61 @@ const ALL_KEYS = [
   "discounts",
 ];
 
+const KNOWN_FIELD_KEYS = new Set(ALL_KEYS);
+
+function slugForField(label) {
+  const slug = String(label || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  return slug ? `custom_${slug}` : `custom_field`;
+}
+
+function fieldDefinition(rawLabel) {
+  const label = String(rawLabel || "").trim();
+  const line = label.toLowerCase();
+  let key = null;
+  if (/patient/.test(line)) key = "patientName";
+  else if (/address/.test(line)) key = "providerAddress";
+  else if (/provider/.test(line)) key = "providerName";
+  else if (/date/.test(line)) key = "dateOfService";
+  else if (/^(discounts?|adjustments?|savings?|write[- ]?offs?)$/.test(line)) key = "discounts";
+  else if (/(service|procedure|treatment|line item|item|cpt)/.test(line)) key = "servicesText";
+  else if (/^(total cost|total|amount|charge|price|balance|due|total due)$/.test(line)) key = "totalCost";
+
+  const meta = key ? FIELD_META[key] : null;
+  return {
+    key: key || slugForField(label),
+    label: meta?.label || label,
+    sourceLabel: label,
+    custom: !key,
+    multiline: Boolean(meta?.multiline),
+    prefix: Boolean(meta?.prefix) || /tax|subtotal|total|cost|amount|charge|price|balance|due|discount/i.test(label),
+  };
+}
+
+function valueForField(bill, field) {
+  if (KNOWN_FIELD_KEYS.has(field.key)) return String(bill[field.key] ?? "");
+  return String(bill.customFields?.[field.key] ?? "");
+}
+
+function updateBillField(bill, field, value) {
+  if (KNOWN_FIELD_KEYS.has(field.key)) {
+    return { ...bill, [field.key]: value };
+  }
+  return {
+    ...bill,
+    customFields: {
+      ...(bill.customFields || {}),
+      [field.key]: value,
+    },
+  };
+}
+
+function normalizeRuleText(value) {
+  return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
 const state = {
   uid: 100,
   poolIdx: 0,
@@ -83,44 +138,6 @@ const state = {
       discounts: "0",
     },
   ],
-  uploadPool: [
-    {
-      patientName: "Marcus Lee",
-      providerName: "Harbor Physical Therapy",
-      providerAddress: "58 Wharf Rd, Seattle, WA 98101",
-      dateOfService: "2026-05-18",
-      servicesText: "Physical therapy session\nTherapeutic exercise",
-      totalCost: "175",
-      discounts: "25",
-    },
-    {
-      patientName: "Priya Nair",
-      providerName: "Pure Living Nutrition",
-      providerAddress: "900 Maple Blvd, San Jose, CA 95112",
-      dateOfService: "2026-05-16",
-      servicesText: "Magnesium supplement\nProbiotic supplement",
-      totalCost: "130",
-      discounts: "0",
-    },
-    {
-      patientName: "",
-      providerName: "Northgate Dermatology",
-      providerAddress: "42 Glen Way, Columbus, OH 43215",
-      dateOfService: "2026-05-14",
-      servicesText: "Cosmetic mole removal\nSkin consultation",
-      totalCost: "520",
-      discounts: "50",
-    },
-    {
-      patientName: "Aisha Bello",
-      providerName: "Cedar Mental Health",
-      providerAddress: "310 Pine St, Madison, WI 53703",
-      dateOfService: "2026-05-17",
-      servicesText: "Therapy session - 50 min",
-      totalCost: "160",
-      discounts: "0",
-    },
-  ],
   selectedId: "b1",
   filter: "all",
   model: "",
@@ -131,7 +148,7 @@ const state = {
     "Patient name\nProvider name\nProvider address\nDate of service\nServices provided\nTotal cost\nDiscounts",
   dragging: false,
   modelMenuOpen: false,
-  rulesOpen: false,
+  rulesOpen: window.location.hash === "#rules",
   toastTimer: null,
 };
 
@@ -144,7 +161,6 @@ const elements = {
   exportCsv: document.querySelector("#export-csv"),
   dropZone: document.querySelector("#drop-zone"),
   browseFiles: document.querySelector("#browse-files"),
-  sampleBatch: document.querySelector("#sample-batch"),
   fileInput: document.querySelector("#file-input"),
   filters: document.querySelector("#filters"),
   billList: document.querySelector("#bill-list"),
@@ -154,8 +170,6 @@ const elements = {
   rulesClose: document.querySelector("#rules-close"),
   rulesText: document.querySelector("#rules-text"),
   extractText: document.querySelector("#extract-text"),
-  rulePreview: document.querySelector("#rule-preview"),
-  extractPreview: document.querySelector("#extract-preview"),
   flaggedCount: document.querySelector("#flagged-count"),
   totalCount: document.querySelector("#total-count"),
   toast: document.querySelector("#toast"),
@@ -207,7 +221,7 @@ function fieldConfidenceBase() {
 }
 
 function fieldLabel(key) {
-  return FIELD_META[key]?.label?.toLowerCase() || key;
+  return FIELD_META[key]?.label?.toLowerCase() || key.replace(/^custom_/, "").replace(/_/g, " ");
 }
 
 function servicesFor(bill) {
@@ -217,9 +231,17 @@ function servicesFor(bill) {
     .filter(Boolean);
 }
 
+function normalizeConfidence(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return null;
+  const percent = numeric > 0 && numeric <= 1 ? numeric * 100 : numeric;
+  return Math.max(0, Math.min(100, percent));
+}
+
 function confidenceFor(bill, key) {
-  if (key === "__overall" && Number.isFinite(Number(bill.confidence))) {
-    return Number(bill.confidence).toFixed(1);
+  if (key === "__overall") {
+    const normalized = normalizeConfidence(bill.confidence);
+    if (normalized !== null) return normalized.toFixed(1);
   }
   const base = fieldConfidenceBase();
   let hash = 0;
@@ -232,14 +254,28 @@ function confidenceFor(bill, key) {
 }
 
 function fieldsFromText(line) {
+  const clean = String(line || "")
+    .replace(/\b(must|required|require|mandatory|need(?:s)? to|should|has to|have to|present|be|is|are)\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return [];
+
   const fields = [];
-  if (/patient/.test(line)) fields.push("patientName");
-  if (/provider/.test(line) && /name/.test(line)) fields.push("providerName");
-  else if (/provider/.test(line) && !/address/.test(line)) fields.push("providerName");
-  if (/address/.test(line)) fields.push("providerAddress");
-  if (/date/.test(line)) fields.push("dateOfService");
-  if (/(total|cost|amount|charge|price|balance)/.test(line)) fields.push("totalCost");
-  return [...new Set(fields)];
+  const seen = new Set();
+  const addField = (rawLabel) => {
+    const field = fieldDefinition(rawLabel);
+    if (seen.has(field.key)) return;
+    seen.add(field.key);
+    fields.push(field);
+  };
+
+  clean
+    .split(/\s*(?:,|;|\band\b|\bor\b)\s*/i)
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .forEach(addField);
+
+  return fields.length ? fields : [fieldDefinition(clean)];
 }
 
 function subjectKeywords(value) {
@@ -343,26 +379,19 @@ function parseRules(text) {
 }
 
 function parseExtract(text) {
-  const keys = [];
-  const unmatched = [];
+  const seen = new Set();
+  const fields = [];
   String(text || "")
     .split("\n")
     .map((line) => line.replace(/^[\s\-*\d.)]+/, "").trim())
     .filter(Boolean)
     .forEach((raw) => {
-      const line = raw.toLowerCase();
-      let key = null;
-      if (/patient/.test(line)) key = "patientName";
-      else if (/address/.test(line)) key = "providerAddress";
-      else if (/provider/.test(line)) key = "providerName";
-      else if (/date/.test(line)) key = "dateOfService";
-      else if (/(discount|adjustment|saving|write[- ]?off)/.test(line)) key = "discounts";
-      else if (/(service|procedure|treatment|line item|item|cpt)/.test(line)) key = "servicesText";
-      else if (/(total|cost|amount|charge|price|balance|due)/.test(line)) key = "totalCost";
-      if (key && !keys.includes(key)) keys.push(key);
-      if (!key) unmatched.push(raw);
+      const field = fieldDefinition(raw);
+      if (seen.has(field.key)) return;
+      seen.add(field.key);
+      fields.push(field);
     });
-  return { keys, unmatched };
+  return { fields, keys: fields.map((field) => field.key), unmatched: [] };
 }
 
 function evaluateBill(bill, parsedRules) {
@@ -371,8 +400,8 @@ function evaluateBill(bill, parsedRules) {
   parsedRules.forEach((rule) => {
     if (rule.kind === "required") {
       rule.fields.forEach((field) => {
-        if (!String(bill[field] || "").trim()) {
-          flags.push({ label: rule.raw, detail: `No ${fieldLabel(field)} detected on the bill` });
+        if (!valueForField(bill, field).trim()) {
+          flags.push({ label: rule.raw, detail: `No ${field.label.toLowerCase()} detected on the bill` });
         }
       });
       return;
@@ -381,7 +410,7 @@ function evaluateBill(bill, parsedRules) {
     if (rule.kind === "excluded") {
       const matched = services.filter((service) => {
         const serviceLine = service.toLowerCase();
-        return rule.keywords.some((keyword) => serviceLine.includes(keyword));
+        return rule.keywords.some((keyword) => normalizeRuleText(serviceLine).includes(normalizeRuleText(keyword)));
       });
       if (matched.length) {
         flags.push({ label: rule.raw, detail: `Matched: ${matched.join(", ")}` });
@@ -428,7 +457,7 @@ function renderModelMenu() {
   elements.modelBackdrop.classList.toggle("hidden", !state.modelMenuOpen);
   elements.modelMenu.classList.toggle("hidden", !state.modelMenuOpen);
   elements.modelMenu.innerHTML = `
-    <div class="menu-label">Server OpenAI models</div>
+    <div class="menu-label">Pick a model</div>
     ${state.models.map(
       (model) => `
         <button class="model-option ${model.id === state.model ? "active" : ""}" type="button" data-model="${model.id}">
@@ -483,22 +512,31 @@ function renderBillList(evaluated) {
             : bill.providerName || "Unknown provider";
       const total = bill.status === "processing" || bill.status === "error" ? "" : money(bill.totalCost);
       return `
-        <button class="bill-card ${bill.id === state.selectedId ? "active" : ""}" type="button" data-bill="${bill.id}">
+        <div class="bill-card ${bill.id === state.selectedId ? "active" : ""}" data-bill="${bill.id}">
           <div class="bill-card-header">
             <span class="bill-dot ${status.key}" style="background:${status.color}"></span>
             <span class="bill-name">${escapeHtml(bill.fileName)}</span>
             <span class="status-pill" style="color:${status.color};background:${status.bg}">${status.label}</span>
+            <button class="bill-delete" type="button" data-delete-bill="${bill.id}" aria-label="Delete ${escapeHtml(bill.fileName)}">x</button>
           </div>
           <div class="bill-card-body">
             <span class="bill-provider">${escapeHtml(provider)}</span>
             <span class="bill-total">${escapeHtml(total)}</span>
           </div>
-        </button>
+        </div>
       `;
     })
     .join("");
 }
 
+function deleteBill(id) {
+  const remaining = state.bills.filter((bill) => bill.id !== id);
+  state.bills = remaining;
+  if (state.selectedId === id) {
+    state.selectedId = remaining[0]?.id || null;
+  }
+  render();
+}
 function renderProcessing(bill) {
   elements.detailPane.innerHTML = `
     <div class="selection-state">
@@ -526,6 +564,48 @@ function renderEmptySelection() {
   `;
 }
 
+function createSourcePages(files) {
+  return files.map((file, index) => ({
+    index: index + 1,
+    name: file.name || `Page ${index + 1}`,
+    type: file.type || "application/octet-stream",
+    url: URL.createObjectURL(file),
+    kind: (file.type || "").startsWith("image/") ? "image" : "document",
+  }));
+}
+
+function renderSourceDocument(bill) {
+  if (!bill.sourcePages || !bill.sourcePages.length) {
+    return renderPaper(bill);
+  }
+
+  return `
+    <div class="column-label">Source document</div>
+    <div class="source-pages">
+      ${bill.sourcePages
+        .map(
+          (page) => `
+            <div class="source-page">
+              <div class="source-page-header">
+                <span>Page ${page.index}</span>
+                <span>${escapeHtml(page.name)}</span>
+              </div>
+              <div class="source-page-body">
+                ${
+                  page.kind === "image"
+                    ? `<img src="${escapeHtml(page.url)}" alt="${escapeHtml(page.name)}" />`
+                    : `<object data="${escapeHtml(page.url)}" type="${escapeHtml(page.type)}">
+                        <a class="source-page-fallback" href="${escapeHtml(page.url)}" target="_blank" rel="noreferrer">Open ${escapeHtml(page.name)}</a>
+                      </object>`
+                }
+              </div>
+            </div>
+          `
+        )
+        .join("")}
+    </div>
+  `;
+}
 function renderPaper(bill) {
   const services = servicesFor(bill);
   const subtotal = numberValue(bill.totalCost) + numberValue(bill.discounts);
@@ -585,27 +665,26 @@ function requiredFieldsFromRules() {
   const fields = new Set();
   parseRules(state.rulesText)
     .filter((rule) => rule.ok && rule.kind === "required")
-    .forEach((rule) => rule.fields.forEach((field) => fields.add(field)));
+    .forEach((rule) => rule.fields.forEach((field) => fields.add(field.key)));
   return fields;
 }
 
 function renderFields(bill) {
   const extract = parseExtract(state.extractText);
-  const keys = extract.keys.length ? extract.keys : ALL_KEYS;
+  const fields = extract.fields.length ? extract.fields : ALL_KEYS.map((key) => fieldDefinition(FIELD_META[key].label));
   const required = requiredFieldsFromRules();
 
-  return keys
-    .map((key) => {
-      const meta = FIELD_META[key] || { label: key };
-      const value = String(bill[key] ?? "");
-      const isMissing = required.has(key) && !value.trim();
-      const id = `field-${key}`;
-      const input = meta.multiline
-        ? `<textarea id="${id}" rows="3" data-field="${key}" class="${isMissing ? "missing" : ""}">${escapeHtml(value)}</textarea>`
+  return fields
+    .map((field) => {
+      const value = valueForField(bill, field);
+      const isMissing = required.has(field.key) && !value.trim();
+      const id = `field-${field.key}`;
+      const input = field.multiline
+        ? `<textarea id="${id}" rows="3" data-field="${field.key}" class="${isMissing ? "missing" : ""}">${escapeHtml(value)}</textarea>`
         : `
           <div class="field-input-wrap">
-            ${meta.prefix ? `<span class="currency-prefix">$</span>` : ""}
-            <input id="${id}" data-field="${key}" class="${meta.prefix ? "money-input" : ""} ${
+            ${field.prefix ? `<span class="currency-prefix">$</span>` : ""}
+            <input id="${id}" data-field="${field.key}" class="${field.prefix ? "money-input" : ""} ${
             isMissing ? "missing" : ""
           }" value="${escapeHtml(value)}" />
           </div>
@@ -614,15 +693,80 @@ function renderFields(bill) {
       return `
         <div class="field-row">
           <div class="field-header">
-            <label for="${id}">${escapeHtml(meta.label)}</label>
+            <label for="${id}">${escapeHtml(field.label)}</label>
             ${isMissing ? `<span class="missing-pill">MISSING</span>` : ""}
-            <span class="confidence">${confidenceFor(bill, key)}%</span>
+            <span class="confidence">${confidenceFor(bill, field.key)}%</span>
           </div>
           ${input}
         </div>
       `;
     })
     .join("");
+}
+
+function sourceKeyForBill(bill) {
+  const sourceUrls = (bill.sourcePages || []).map((page) => page.url).join("|");
+  return `${bill.id}:${sourceUrls || "mock"}`;
+}
+
+function renderSelectionHeader(bill, evaluatedBill) {
+  const status = statusFor(evaluatedBill);
+  const flagged = evaluatedBill.flags.length > 0;
+  return `
+    <div class="selection-header">
+      <div class="selection-title">
+        <strong>${escapeHtml(bill.fileName)}</strong>
+        <span>Extracted with ${escapeHtml(bill.modelUsed || modelLabel())} - ${confidenceFor(bill, "__overall")}% overall confidence</span>
+      </div>
+      <div class="header-fill"></div>
+      <span class="status-pill" style="color:${status.color};background:${status.bg}">
+        ${flagged ? `${status.label} - ${evaluatedBill.flags.length} issue${evaluatedBill.flags.length === 1 ? "" : "s"}` : status.label}
+      </span>
+      <button class="rerun-button" id="rerun-analysis" type="button">Re-run</button>
+    </div>
+  `;
+}
+
+function renderAnalysisColumn(bill, evaluatedBill) {
+  const flagged = evaluatedBill.flags.length > 0;
+  const parsedRuleCount = parseRules(state.rulesText).filter((rule) => rule.ok).length;
+  return `
+    <div class="analysis-column">
+      <div class="verdict ${flagged ? "flagged" : "eligible"}">
+        <div class="verdict-icon">${flagged ? "!" : "OK"}</div>
+        <div>
+          <h2>${flagged ? "Flagged for review" : "Eligible"}</h2>
+          <p>${
+            flagged
+              ? `Fails ${evaluatedBill.flags.length} of ${parsedRuleCount} active eligibility rules`
+              : `Passes all ${parsedRuleCount} active eligibility rules`
+          }</p>
+          ${
+            flagged
+              ? `<div class="flag-list">${evaluatedBill.flags
+                  .map(
+                    (flag) => `
+                      <div class="flag-item">
+                        <div>
+                          <strong>${escapeHtml(flag.label)}</strong>
+                          <span>${escapeHtml(flag.detail)}</span>
+                        </div>
+                      </div>
+                    `
+                  )
+                  .join("")}</div>`
+              : ""
+          }
+        </div>
+      </div>
+
+      <div class="section-heading">
+        <span>Extracted data</span>
+        <button class="link-button" id="edit-fields" type="button">Edit fields</button>
+      </div>
+      <div class="field-stack">${renderFields(bill)}</div>
+    </div>
+  `;
 }
 
 function renderDetail(evaluated) {
@@ -641,85 +785,35 @@ function renderDetail(evaluated) {
     return;
   }
 
-  const status = statusFor(evaluatedBill);
-  const flagged = evaluatedBill.flags.length > 0;
-  const parsedRuleCount = parseRules(state.rulesText).filter((rule) => rule.ok).length;
+  const sourceKey = sourceKeyForBill(bill);
+  const headerHtml = renderSelectionHeader(bill, evaluatedBill);
+  const analysisHtml = renderAnalysisColumn(bill, evaluatedBill);
+  const canReuseSource =
+    elements.detailPane.dataset.view === "ready" &&
+    elements.detailPane.dataset.billId === bill.id &&
+    elements.detailPane.dataset.sourceKey === sourceKey &&
+    elements.detailPane.querySelector(".source-column");
 
+  if (canReuseSource) {
+    const header = elements.detailPane.querySelector(".selection-header");
+    const analysis = elements.detailPane.querySelector(".analysis-column");
+    if (header) header.outerHTML = headerHtml;
+    if (analysis) analysis.outerHTML = analysisHtml;
+    return;
+  }
+
+  elements.detailPane.dataset.view = "ready";
+  elements.detailPane.dataset.billId = bill.id;
+  elements.detailPane.dataset.sourceKey = sourceKey;
   elements.detailPane.innerHTML = `
-    <div class="selection-header">
-      <div class="selection-title">
-        <strong>${escapeHtml(bill.fileName)}</strong>
-        <span>Extracted with ${escapeHtml(bill.modelUsed || modelLabel())} - ${confidenceFor(bill, "__overall")}% overall confidence</span>
-      </div>
-      <div class="header-fill"></div>
-      <span class="status-pill" style="color:${status.color};background:${status.bg}">
-        ${flagged ? `${status.label} - ${evaluatedBill.flags.length} issue${evaluatedBill.flags.length === 1 ? "" : "s"}` : status.label}
-      </span>
-      <button class="rerun-button" id="rerun-analysis" type="button">Re-run</button>
-    </div>
-
+    ${headerHtml}
     <div class="content-grid">
-      <div class="source-column">${renderPaper(bill)}</div>
-      <div class="analysis-column">
-        <div class="verdict ${flagged ? "flagged" : "eligible"}">
-          <div class="verdict-icon">${flagged ? "!" : "OK"}</div>
-          <div>
-            <h2>${flagged ? "Flagged for review" : "Eligible"}</h2>
-            <p>${
-              flagged
-                ? `Fails ${evaluatedBill.flags.length} of ${parsedRuleCount} active eligibility rules`
-                : `Passes all ${parsedRuleCount} active eligibility rules`
-            }</p>
-            ${
-              flagged
-                ? `<div class="flag-list">${evaluatedBill.flags
-                    .map(
-                      (flag) => `
-                        <div class="flag-item">
-                          <div>
-                            <strong>${escapeHtml(flag.label)}</strong>
-                            <span>${escapeHtml(flag.detail)}</span>
-                          </div>
-                        </div>
-                      `
-                    )
-                    .join("")}</div>`
-                : ""
-            }
-          </div>
-        </div>
-
-        <div class="section-heading">
-          <span>Extracted data</span>
-          <button class="link-button" id="edit-fields" type="button">Edit fields</button>
-        </div>
-        <div class="field-stack">${renderFields(bill)}</div>
-      </div>
+      <div class="source-column">${renderSourceDocument(bill)}</div>
+      ${analysisHtml}
     </div>
   `;
 }
 
-function renderRulePreview() {
-  const chips = parseRules(state.rulesText).map((rule) => {
-    if (!rule.ok) {
-      const snippet = rule.raw.length > 26 ? `${rule.raw.slice(0, 26)}...` : rule.raw;
-      return `<span class="chip warn">Unclear: ${escapeHtml(snippet)}</span>`;
-    }
-    if (rule.kind === "required") {
-      return `<span class="chip ok">Require ${escapeHtml(rule.fields.map(fieldLabel).join(" + "))}</span>`;
-    }
-    return `<span class="chip warn">Exclude "${escapeHtml(rule.keywords.join(" / "))}"</span>`;
-  });
-  elements.rulePreview.innerHTML = chips.join("");
-}
-
-function renderExtractPreview() {
-  const extract = parseExtract(state.extractText);
-  const keys = extract.keys.length ? extract.keys : ALL_KEYS;
-  const chips = keys.map((key) => `<span class="chip ok">${escapeHtml(FIELD_META[key]?.label || key)}</span>`);
-  const unmatched = extract.unmatched.map((raw) => `<span class="chip warn">? ${escapeHtml(raw)}</span>`);
-  elements.extractPreview.innerHTML = [...chips, ...unmatched].join("");
-}
 
 function renderDrawer(evaluated) {
   elements.drawerBackdrop.classList.toggle("hidden", !state.rulesOpen);
@@ -727,8 +821,6 @@ function renderDrawer(evaluated) {
   elements.rulesText.value = state.rulesText;
   elements.extractText.value = state.extractText;
   updateDrawerCounts(evaluated);
-  renderRulePreview();
-  renderExtractPreview();
 }
 
 function updateDrawerCounts(evaluated = evaluatedBills()) {
@@ -758,36 +850,45 @@ function flash(message) {
 
 async function addFiles(files) {
   if (!files.length) return;
-  const pages = [...files];
-  const firstName = pages[0]?.name || "uploaded-bill.pdf";
-  const newBill = {
+  const documents = [...files];
+  const newBills = documents.map((file) => ({
     id: `u${state.uid++}`,
-    fileName: pages.length === 1 ? firstName : `${firstName} + ${pages.length - 1} page(s)`,
+    fileName: file?.name || "uploaded-bill.pdf",
     status: "processing",
-    pageCount: pages.length,
-  };
-  state.bills = [newBill, ...state.bills];
-  state.selectedId = newBill.id;
-  state.dragging = false;
-  render();
-  await analyzeBill(newBill.id, pages);
-}
-
-function addSampleBatch() {
-  const sampleFiles = [{ name: "batch-scan-01.jpg" }, { name: "batch-scan-02.pdf" }, { name: "batch-scan-03.png" }];
-  const newBills = sampleFiles.map((file) => ({
-    id: `u${state.uid++}`,
-    fileName: file.name,
-    status: "processing",
+    pageCount: 1,
+    sourceFiles: [file],
+    sourcePages: createSourcePages([file]),
   }));
+
   state.bills = [...newBills, ...state.bills];
   state.selectedId = newBills[0].id;
+  state.dragging = false;
   render();
-  newBills.forEach((bill, index) => {
-    window.setTimeout(() => resolveBill(bill.id), 900 + index * 650);
-  });
+
+  await Promise.all(newBills.map((bill) => analyzeBill(bill.id, bill.sourceFiles)));
 }
 
+function applyExtractedFields(billData) {
+  const fields = parseExtract(state.extractText).fields;
+  const customFields = { ...(billData.customFields || {}) };
+  const returned = Array.isArray(billData.extractedFields) ? billData.extractedFields : [];
+
+  fields.forEach((field) => {
+    const match = returned.find((item) => normalizeRuleText(item.label) === normalizeRuleText(field.sourceLabel || field.label));
+    if (!match) return;
+    const value = String(match.value ?? "");
+    if (KNOWN_FIELD_KEYS.has(field.key)) {
+      billData[field.key] = value;
+    } else {
+      customFields[field.key] = value;
+    }
+  });
+
+  return {
+    ...billData,
+    customFields,
+  };
+}
 async function analyzeBill(id, pages) {
   const formData = new FormData();
   pages.forEach((page) => formData.append("pages", page, page.name));
@@ -809,7 +910,7 @@ async function analyzeBill(id, pages) {
       bill.id === id
         ? {
             ...bill,
-            ...payload.bill,
+            ...applyExtractedFields(payload.bill || {}),
             fileName: payload.fileName || bill.fileName,
             pageCount: payload.pageCount || bill.pageCount,
             modelUsed: payload.model,
@@ -828,25 +929,34 @@ async function analyzeBill(id, pages) {
   }
 }
 
-function resolveBill(id) {
-  const data = state.uploadPool[state.poolIdx % state.uploadPool.length];
-  state.poolIdx += 1;
-  state.bills = state.bills.map((bill) => (bill.id === id ? { ...bill, ...data, status: "done" } : bill));
-  render();
-}
+async function reRunSelectedBill() {
+  const bill = state.bills.find((item) => item.id === state.selectedId);
+  if (!bill) return;
 
+  if (!bill.sourceFiles || !bill.sourceFiles.length) {
+    flash("Upload pages are required to re-run OpenAI analysis");
+    return;
+  }
+
+  state.bills = state.bills.map((item) =>
+    item.id === bill.id ? { ...item, status: "processing", error: null } : item
+  );
+  render();
+  await analyzeBill(bill.id, bill.sourceFiles);
+}
 function exportCsv() {
   const bills = evaluatedBills().filter((bill) => bill.status !== "processing" && bill.status !== "error");
   const extract = parseExtract(state.extractText);
-  const columns = extract.keys.length ? extract.keys : ALL_KEYS;
-  const header = ["File", ...columns.map((key) => FIELD_META[key].label), "Eligibility", "Flags", "Model"];
+  const columns = extract.fields.length ? extract.fields : ALL_KEYS.map((key) => fieldDefinition(FIELD_META[key].label));
+  const header = ["File", ...columns.map((field) => field.label), "Eligibility", "Flags", "Model"];
   const rows = [header];
 
   bills.forEach((bill) => {
-    const cells = columns.map((key) => {
-      if (key === "servicesText") return servicesFor(bill).join("; ");
-      if (key === "totalCost" || key === "discounts") return money(bill[key]);
-      return bill[key] || "";
+    const cells = columns.map((field) => {
+      if (field.key === "servicesText") return servicesFor(bill).join("; ");
+      const value = valueForField(bill, field);
+      if (field.prefix) return money(value);
+      return value;
     });
     rows.push([
       bill.fileName,
@@ -894,10 +1004,17 @@ function bindEvents() {
   elements.modelMenu.addEventListener("click", (event) => {
     const button = event.target.closest("[data-model]");
     if (!button) return;
-    state.model = button.dataset.model;
+    const nextModel = button.dataset.model;
     state.modelMenuOpen = false;
+
+    if (nextModel !== state.model) {
+      state.model = nextModel;
+      render();
+      flash(`Selected ${modelLabel()}`);
+      return;
+    }
+
     render();
-    flash(`Re-analyzing with ${modelLabel()}...`);
   });
 
   elements.rulesOpen.addEventListener("click", () => {
@@ -926,10 +1043,6 @@ function bindEvents() {
     event.target.value = "";
   });
 
-  elements.sampleBatch.addEventListener("click", () => {
-    addSampleBatch();
-  });
-
   elements.dropZone.addEventListener("dragover", (event) => {
     event.preventDefault();
     state.dragging = true;
@@ -956,15 +1069,21 @@ function bindEvents() {
   });
 
   elements.billList.addEventListener("click", (event) => {
-    const button = event.target.closest("[data-bill]");
-    if (!button) return;
-    state.selectedId = button.dataset.bill;
+    const deleteButton = event.target.closest("[data-delete-bill]");
+    if (deleteButton) {
+      deleteBill(deleteButton.dataset.deleteBill);
+      return;
+    }
+
+    const billCard = event.target.closest("[data-bill]");
+    if (!billCard) return;
+    state.selectedId = billCard.dataset.bill;
     render();
   });
 
   elements.detailPane.addEventListener("click", (event) => {
     if (event.target.closest("#rerun-analysis")) {
-      flash("Re-ran eligibility analysis");
+      reRunSelectedBill();
     }
     if (event.target.closest("#edit-fields")) {
       state.rulesOpen = true;
@@ -976,7 +1095,7 @@ function bindEvents() {
     const field = event.target.dataset.field;
     if (!field) return;
     state.bills = state.bills.map((bill) =>
-      bill.id === state.selectedId ? { ...bill, [field]: event.target.value } : bill
+      bill.id === state.selectedId ? updateBillField(bill, { key: field }, event.target.value) : bill
     );
     render();
   });
@@ -984,7 +1103,6 @@ function bindEvents() {
   elements.rulesText.addEventListener("input", (event) => {
     state.rulesText = event.target.value;
     const evaluated = evaluatedBills();
-    renderRulePreview();
     updateDrawerCounts(evaluated);
     renderFilters(evaluated);
     renderBillList(evaluated);
@@ -993,7 +1111,6 @@ function bindEvents() {
 
   elements.extractText.addEventListener("input", (event) => {
     state.extractText = event.target.value;
-    renderExtractPreview();
     renderDetail(evaluatedBills());
   });
 }
@@ -1016,4 +1133,3 @@ async function loadServerConfig() {
     // Opening index.html directly keeps the static demo usable.
   }
 }
-

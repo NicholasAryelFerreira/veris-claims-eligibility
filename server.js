@@ -35,6 +35,11 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+const ExtractedField = z.object({
+  label: z.string(),
+  value: z.string(),
+});
+
 const BillAnalysis = z.object({
   patientName: z.string(),
   providerName: z.string(),
@@ -43,7 +48,8 @@ const BillAnalysis = z.object({
   servicesText: z.string(),
   totalCost: z.string(),
   discounts: z.string(),
-  confidence: z.number().min(0).max(100),
+  extractedFields: z.array(ExtractedField).describe("One entry for every requested field label, including custom fields such as Tax collected."),
+  confidence: z.number().min(0).max(100).describe("Overall extraction confidence as a percentage from 0 to 100. Use 60 for sixty percent, not 0.6."),
   notes: z.string(),
 });
 
@@ -82,7 +88,7 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
 
     const pages = req.files || [];
     if (!pages.length) {
-      res.status(400).json({ error: "Upload at least one bill page." });
+      res.status(400).json({ error: "Upload at least one bill document." });
       return;
     }
 
@@ -96,14 +102,15 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
       {
         type: "input_text",
         text: [
-          "You are extracting structured data from one medical bill. The uploaded files may be multiple pages of the same bill.",
-          "Read all pages together as one bill, not as separate claims.",
+          "You are extracting structured data from one medical bill document. The uploaded document may contain multiple pages.",
+          "Read the entire document as one bill, not as separate claims.",
           "Return empty strings for fields that are not visible.",
           "Use ISO YYYY-MM-DD for dateOfService when possible.",
-          "For servicesText, put one service or line item per line.",
+          "For servicesText, put one service or line item per line and include bill line items relevant to the eligibility rules.",
           "For totalCost and discounts, return numeric strings without currency symbols.",
+          "For extractedFields, return one entry for every requested field label exactly as written. Include custom fields such as Tax collected, subtotal, invoice number, or any other line the reviewer requested.",
           "",
-          `Uploaded page filenames: ${pageNames}`,
+          `Uploaded document filename: ${pageNames}`,
           "",
           "Eligibility rules currently configured by the reviewer:",
           rulesText || "(none)",
@@ -121,7 +128,7 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         {
           role: "system",
           content:
-            "You extract medical bill eligibility review fields. Do not make medical coverage decisions; only extract what is visible in the provided bill pages.",
+            "You extract medical bill eligibility review fields. Do not make medical coverage decisions; only extract what is visible in the provided bill document.",
         },
         {
           role: "user",
@@ -143,7 +150,8 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         servicesText: parsed.servicesText || "",
         totalCost: parsed.totalCost || "",
         discounts: parsed.discounts || "",
-        confidence: parsed.confidence,
+        extractedFields: Array.isArray(parsed.extractedFields) ? parsed.extractedFields : [],
+        confidence: normalizeConfidence(parsed.confidence),
         notes: parsed.notes || "",
       },
       model: selectedModel.id,
@@ -162,6 +170,12 @@ app.use((error, _req, res, _next) => {
   res.status(status).json({ error: message });
 });
 
+function normalizeConfidence(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 0;
+  const percent = numeric > 0 && numeric <= 1 ? numeric * 100 : numeric;
+  return Math.max(0, Math.min(100, percent));
+}
 function fileToOpenAIContent(file) {
   const base64 = file.buffer.toString("base64");
   if (file.mimetype.startsWith("image/")) {
