@@ -1003,7 +1003,7 @@ function exportCsv() {
   const bills = evaluatedBills().filter((bill) => bill.status !== "processing" && bill.status !== "error");
   const extract = parseExtract(state.extractText);
   const columns = extract.fields.length ? extract.fields : ALL_KEYS.map((key) => fieldDefinition(FIELD_META[key].label));
-  const header = ["File", ...columns.map((field) => field.label), "Eligibility", "Ineligibility reason", "Flags", "Model"];
+  const header = ["File", ...columns.map((field) => field.label), "Eligibility", "Flags", "Ineligibility reason", "Model"];
   const rows = [header];
 
   bills.forEach((bill) => {
@@ -1017,8 +1017,8 @@ function exportCsv() {
       bill.fileName,
       ...cells,
       bill.flags.length ? "Flagged" : "Eligible",
-      ineligibilityReason(bill),
       bill.flags.map((flag) => flag.label).join(" | "),
+      ineligibilityReason(bill),
       bill.modelUsed || modelLabel(),
     ]);
   });
