@@ -106,6 +106,8 @@ const state = {
       servicesText: "Office visit - established patient\nRoutine blood panel",
       totalCost: "284",
       discounts: "40",
+      analyzedRulesText: DEFAULT_ANALYZED_RULES_TEXT,
+      ruleEvaluations: [],
     },
     {
       id: "b2",
@@ -139,6 +141,8 @@ const state = {
       servicesText: "Comprehensive metabolic panel\nLipid panel",
       totalCost: "162",
       discounts: "18",
+      analyzedRulesText: DEFAULT_ANALYZED_RULES_TEXT,
+      ruleEvaluations: [],
     },
     {
       id: "b4",
@@ -151,6 +155,8 @@ const state = {
       servicesText: "Knee X-ray (2 views)\nOrthopedic consultation",
       totalCost: "430",
       discounts: "65",
+      analyzedRulesText: DEFAULT_ANALYZED_RULES_TEXT,
+      ruleEvaluations: [],
     },
     {
       id: "b5",
@@ -427,9 +433,28 @@ function parseExtract(text) {
   return { fields, keys: fields.map((field) => field.key), unmatched: [] };
 }
 
+function ruleReviewState(bill) {
+  const currentRules = ruleLines(state.rulesText);
+  const analyzedRules = ruleLines(bill.analyzedRulesText || "");
+  const currentText = normalizedInstructionsText(state.rulesText);
+  const analyzedText = normalizedInstructionsText(bill.analyzedRulesText || "");
+  const hasRuleEvaluations = Array.isArray(bill.ruleEvaluations);
+  const analyzedRuleKeys = new Set(analyzedRules.map(normalizeRuleText));
+  const unevaluatedRules = hasRuleEvaluations
+    ? currentRules.filter((rule) => !analyzedRuleKeys.has(normalizeRuleText(rule)))
+    : currentRules;
+
+  return {
+    analyzedRuleCount: hasRuleEvaluations ? analyzedRules.length : 0,
+    currentRuleCount: currentRules.length,
+    hasRuleEvaluations,
+    isStale: hasRuleEvaluations && analyzedText !== currentText,
+    unevaluatedRules,
+  };
+}
+
 function modelRuleFlagsFor(bill) {
-  const currentRules = normalizedInstructionsText(state.rulesText);
-  if (!Array.isArray(bill.ruleEvaluations) || bill.analyzedRulesText !== currentRules) return null;
+  if (!Array.isArray(bill.ruleEvaluations)) return [];
 
   return bill.ruleEvaluations
     .filter((evaluation) => evaluation && evaluation.passed === false)
@@ -441,7 +466,7 @@ function modelRuleFlagsFor(bill) {
 }
 
 function evaluateBill(bill) {
-  return modelRuleFlagsFor(bill) ?? [];
+  return modelRuleFlagsFor(bill);
 }
 
 function evaluatedBills() {
@@ -534,7 +559,7 @@ function renderBillList(evaluated) {
       const status = statusFor(bill);
       const provider =
         bill.status === "processing"
-          ? "Extracting data..."
+          ? "Extracting data and analyzing eligibility rules..."
           : bill.status === "error"
             ? bill.error || "Analysis failed"
             : bill.providerName || "Unknown provider";
@@ -757,7 +782,11 @@ function renderSelectionHeader(bill, evaluatedBill) {
 
 function renderAnalysisColumn(bill, evaluatedBill) {
   const flagged = evaluatedBill.flags.length > 0;
-  const parsedRuleCount = ruleLines(state.rulesText).length;
+  const review = ruleReviewState(bill);
+  const evaluatedRuleCount = review.hasRuleEvaluations ? review.analyzedRuleCount : review.currentRuleCount;
+  const ruleCountLabel = review.isStale ? "last analyzed eligibility rules" : "active eligibility rules";
+  const needsRuleEvaluation = review.isStale && review.unevaluatedRules.length > 0;
+  const rulesChanged = review.isStale && !review.unevaluatedRules.length;
   return `
     <div class="analysis-column">
       <div class="verdict ${flagged ? "flagged" : "eligible"}">
@@ -766,8 +795,8 @@ function renderAnalysisColumn(bill, evaluatedBill) {
           <h2>${flagged ? "Flagged for review" : "Eligible"}</h2>
           <p>${
             flagged
-              ? `Fails ${evaluatedBill.flags.length} of ${parsedRuleCount} active eligibility rules`
-              : `Passes all ${parsedRuleCount} active eligibility rules`
+              ? `Fails ${evaluatedBill.flags.length} of ${evaluatedRuleCount} ${ruleCountLabel}`
+              : `Passes all ${evaluatedRuleCount} ${ruleCountLabel}`
           }</p>
           ${
             flagged
@@ -784,6 +813,13 @@ function renderAnalysisColumn(bill, evaluatedBill) {
                   )
                   .join("")}</div>`
               : ""
+          }
+          ${
+            needsRuleEvaluation
+              ? `<div class="rule-refresh-notice"><strong>${review.unevaluatedRules.length} new rule${review.unevaluatedRules.length === 1 ? "" : "s"} must be evaluated</strong><span>Click Re-run to analyze ${review.unevaluatedRules.length === 1 ? "this rule" : "these rules"} for this bill.</span></div>`
+              : rulesChanged
+                ? `<div class="rule-refresh-notice"><strong>Eligibility rules changed</strong><span>Click Re-run to refresh this bill's rule analysis.</span></div>`
+                : ""
           }
         </div>
       </div>
