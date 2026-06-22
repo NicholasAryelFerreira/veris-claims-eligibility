@@ -417,53 +417,14 @@ function modelRuleFlagsFor(bill) {
     }));
 }
 
-function localRuleFlags(bill, parsedRules) {
-  const flags = [];
-  const services = servicesFor(bill);
-  parsedRules.forEach((rule) => {
-    if (rule.kind === "required") {
-      rule.fields.forEach((field) => {
-        if (!valueForField(bill, field).trim()) {
-          flags.push({ label: rule.raw, detail: `No ${field.label.toLowerCase()} detected on the bill` });
-        }
-      });
-      return;
-    }
-
-    if (rule.kind === "excluded") {
-      const matched = services.filter((service) => {
-        const serviceLine = service.toLowerCase();
-        return rule.keywords.some((keyword) => normalizeRuleText(serviceLine).includes(normalizeRuleText(keyword)));
-      });
-      if (matched.length) {
-        flags.push({ label: rule.raw, detail: `Matched: ${matched.join(", ")}` });
-      }
-    }
-  });
-  return flags;
-}
-
-function mergeFlags(primaryFlags, fallbackFlags) {
-  const seen = new Set();
-  return [...primaryFlags, ...fallbackFlags].filter((flag) => {
-    const key = `${normalizeRuleText(flag.label)}:${normalizeRuleText(flag.detail)}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-function evaluateBill(bill, parsedRules) {
-  const localFlags = localRuleFlags(bill, parsedRules);
-  const modelFlags = modelRuleFlagsFor(bill);
-  return modelFlags ? mergeFlags(modelFlags, localFlags) : localFlags;
+function evaluateBill(bill) {
+  return modelRuleFlagsFor(bill) ?? [];
 }
 
 function evaluatedBills() {
-  const rules = parseRules(state.rulesText).filter((rule) => rule.ok);
   return state.bills.map((bill) => ({
     ...bill,
-    flags: bill.status === "processing" || bill.status === "error" ? [] : evaluateBill(bill, rules),
+    flags: bill.status === "processing" || bill.status === "error" ? [] : evaluateBill(bill),
   }));
 }
 
