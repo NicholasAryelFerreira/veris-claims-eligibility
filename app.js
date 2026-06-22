@@ -454,6 +454,11 @@ function evaluatedBills() {
   }));
 }
 
+function ineligibilityReason(bill) {
+  if (!bill.flags?.length) return "";
+  return bill.flags.map((flag) => `${flag.label}: ${flag.detail}`).join(" | ");
+}
+
 function statusFor(bill) {
   if (bill.status === "processing") {
     return { key: "processing", label: "Processing", color: "#d97706", bg: "rgba(217, 119, 6, .12)" };
@@ -985,7 +990,7 @@ function exportCsv() {
   const bills = evaluatedBills().filter((bill) => bill.status !== "processing" && bill.status !== "error");
   const extract = parseExtract(state.extractText);
   const columns = extract.fields.length ? extract.fields : ALL_KEYS.map((key) => fieldDefinition(FIELD_META[key].label));
-  const header = ["File", ...columns.map((field) => field.label), "Eligibility", "Flags", "Model"];
+  const header = ["File", ...columns.map((field) => field.label), "Eligibility", "Ineligibility reason", "Flags", "Model"];
   const rows = [header];
 
   bills.forEach((bill) => {
@@ -999,6 +1004,7 @@ function exportCsv() {
       bill.fileName,
       ...cells,
       bill.flags.length ? "Flagged" : "Eligible",
+      ineligibilityReason(bill),
       bill.flags.map((flag) => flag.label).join(" | "),
       bill.modelUsed || modelLabel(),
     ]);

@@ -49,8 +49,8 @@ const ExtractedField = z.object({
 
 const RuleEvaluation = z.object({
   rule: z.string().describe("The eligibility rule exactly as the reviewer wrote it."),
-  passed: z.boolean().describe("True when the bill satisfies the reviewer-provided rule; false when it violates the rule."),
-  detail: z.string().describe("Brief evidence from the bill explaining the result."),
+  passed: z.boolean().describe("True unless visible bill evidence directly proves the reviewer-provided rule was violated; false only for a proven violation."),
+  detail: z.string().describe("Brief visible evidence from the bill. If no violation is proven, explain that no visible violation was found."),
   confidence: ConfidenceScore,
 });
 
@@ -74,7 +74,7 @@ const BillAnalysis = z.object({
   discounts: z.string(),
   fieldConfidences: FieldConfidences.describe("Confidence for each canonical extracted field. Use 0 when a field is not visible."),
   extractedFields: z.array(ExtractedField).describe("One entry for every requested field label, including custom fields such as Tax collected."),
-  ruleEvaluations: z.array(RuleEvaluation).describe("One model-produced pass/fail evaluation for every non-empty eligibility rule line supplied by the reviewer."),
+  ruleEvaluations: z.array(RuleEvaluation).describe("One model-produced eligibility evaluation for every non-empty rule line supplied by the reviewer. A rule fails only when visible bill evidence proves a violation."),
   confidence: ConfidenceScore.describe("Overall extraction confidence as a percentage from 0 to 100."),
   notes: z.string(),
 });
@@ -136,7 +136,9 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
           "For totalCost and discounts, return numeric strings without currency symbols.",
           "For extractedFields, return one entry for every requested field label exactly as written. Include custom fields such as Tax collected, subtotal, invoice number, or any other line the reviewer requested.",
           "For fieldConfidences and extractedFields.confidence, return only evidence-based confidence percentages from 0 to 100. Use 0 when the field is not visible. Do not invent confidence values for fields that were not extracted from the document.",
-          "For ruleEvaluations, evaluate every non-empty eligibility rule line supplied by the reviewer exactly as written. Return passed=false when the bill violates that rule and include the visible evidence in detail.",
+          "For ruleEvaluations, evaluate every non-empty eligibility rule line supplied by the reviewer exactly as written.",
+          "The bill is eligible unless the visible document evidence proves otherwise. Return passed=false only when a rule violation is directly proven by visible bill text or line items.",
+          "If a rule is not applicable, cannot be verified, lacks context, is not mentioned by the bill, or has insufficient evidence, return passed=true and explain that no visible violation was found.",
           "Apply only the reviewer-provided rules. Do not invent extra coverage rules, benefit rules, or medical policy rules.",
           "",
           `Uploaded document filename: ${pageNames}`,
@@ -157,7 +159,7 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         {
           role: "system",
           content:
-            "You extract medical bill eligibility review fields and apply only the reviewer-provided eligibility rules to the visible bill evidence. Do not invent independent medical coverage decisions or policy rules.",
+            "You extract medical bill eligibility review fields and apply only the reviewer-provided eligibility rules to visible bill evidence. The bill is eligible unless visible evidence directly proves a rule violation. Do not invent independent medical coverage decisions or policy rules.",
         },
         {
           role: "user",
