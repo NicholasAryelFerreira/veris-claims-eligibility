@@ -417,10 +417,7 @@ function modelRuleFlagsFor(bill) {
     }));
 }
 
-function evaluateBill(bill, parsedRules) {
-  const modelFlags = modelRuleFlagsFor(bill);
-  if (modelFlags) return modelFlags;
-
+function localRuleFlags(bill, parsedRules) {
   const flags = [];
   const services = servicesFor(bill);
   parsedRules.forEach((rule) => {
@@ -444,6 +441,22 @@ function evaluateBill(bill, parsedRules) {
     }
   });
   return flags;
+}
+
+function mergeFlags(primaryFlags, fallbackFlags) {
+  const seen = new Set();
+  return [...primaryFlags, ...fallbackFlags].filter((flag) => {
+    const key = `${normalizeRuleText(flag.label)}:${normalizeRuleText(flag.detail)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function evaluateBill(bill, parsedRules) {
+  const localFlags = localRuleFlags(bill, parsedRules);
+  const modelFlags = modelRuleFlagsFor(bill);
+  return modelFlags ? mergeFlags(modelFlags, localFlags) : localFlags;
 }
 
 function evaluatedBills() {
