@@ -35,9 +35,33 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
+const ConfidenceScore = z
+  .number()
+  .min(0)
+  .max(100)
+  .describe("Evidence-based confidence percentage from 0 to 100. Use 60 for sixty percent, not 0.6.");
+
 const ExtractedField = z.object({
   label: z.string(),
   value: z.string(),
+  confidence: ConfidenceScore,
+});
+
+const RuleEvaluation = z.object({
+  rule: z.string().describe("The eligibility rule exactly as the reviewer wrote it."),
+  passed: z.boolean().describe("True when the bill satisfies the reviewer-provided rule; false when it violates the rule."),
+  detail: z.string().describe("Brief evidence from the bill explaining the result."),
+  confidence: ConfidenceScore,
+});
+
+const FieldConfidences = z.object({
+  patientName: ConfidenceScore,
+  providerName: ConfidenceScore,
+  providerAddress: ConfidenceScore,
+  dateOfService: ConfidenceScore,
+  servicesText: ConfidenceScore,
+  totalCost: ConfidenceScore,
+  discounts: ConfidenceScore,
 });
 
 const BillAnalysis = z.object({
@@ -48,8 +72,10 @@ const BillAnalysis = z.object({
   servicesText: z.string(),
   totalCost: z.string(),
   discounts: z.string(),
+  fieldConfidences: FieldConfidences.describe("Confidence for each canonical extracted field. Use 0 when a field is not visible."),
   extractedFields: z.array(ExtractedField).describe("One entry for every requested field label, including custom fields such as Tax collected."),
-  confidence: z.number().min(0).max(100).describe("Overall extraction confidence as a percentage from 0 to 100. Use 60 for sixty percent, not 0.6."),
+  ruleEvaluations: z.array(RuleEvaluation).describe("One model-produced pass/fail evaluation for every non-empty eligibility rule line supplied by the reviewer."),
+  confidence: ConfidenceScore.describe("Overall extraction confidence as a percentage from 0 to 100."),
   notes: z.string(),
 });
 
@@ -109,6 +135,9 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
           "For servicesText, put one service or line item per line and include bill line items relevant to the eligibility rules.",
           "For totalCost and discounts, return numeric strings without currency symbols.",
           "For extractedFields, return one entry for every requested field label exactly as written. Include custom fields such as Tax collected, subtotal, invoice number, or any other line the reviewer requested.",
+          "For fieldConfidences and extractedFields.confidence, return only evidence-based confidence percentages from 0 to 100. Use 0 when the field is not visible. Do not invent confidence values for fields that were not extracted from the document.",
+          "For ruleEvaluations, evaluate every non-empty eligibility rule line supplied by the reviewer exactly as written. Return passed=false when the bill violates that rule and include the visible evidence in detail.",
+          "Apply only the reviewer-provided rules. Do not invent extra coverage rules, benefit rules, or medical policy rules.",
           "",
           `Uploaded document filename: ${pageNames}`,
           "",
@@ -128,7 +157,7 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         {
           role: "system",
           content:
-            "You extract medical bill eligibility review fields. Do not make medical coverage decisions; only extract what is visible in the provided bill document.",
+            "You extract medical bill eligibility review fields and apply only the reviewer-provided eligibility rules to the visible bill evidence. Do not invent independent medical coverage decisions or policy rules.",
         },
         {
           role: "user",
@@ -150,7 +179,9 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         servicesText: parsed.servicesText || "",
         totalCost: parsed.totalCost || "",
         discounts: parsed.discounts || "",
-        extractedFields: Array.isArray(parsed.extractedFields) ? parsed.extractedFields : [],
+        fieldConfidences: normalizeConfidenceMap(parsed.fieldConfidences),
+        extractedFields: normalizeExtractedFields(parsed.extractedFields),
+        ruleEvaluations: normalizeRuleEvaluations(parsed.ruleEvaluations),
         confidence: normalizeConfidence(parsed.confidence),
         notes: parsed.notes || "",
       },
@@ -175,6 +206,31 @@ function normalizeConfidence(value) {
   if (!Number.isFinite(numeric)) return 0;
   const percent = numeric > 0 && numeric <= 1 ? numeric * 100 : numeric;
   return Math.max(0, Math.min(100, percent));
+}
+
+function normalizeConfidenceMap(values = {}) {
+  return Object.fromEntries(
+    Object.entries(values).map(([key, value]) => [key, normalizeConfidence(value)])
+  );
+}
+
+function normalizeExtractedFields(fields = []) {
+  if (!Array.isArray(fields)) return [];
+  return fields.map((field) => ({
+    label: String(field.label || ""),
+    value: String(field.value || ""),
+    confidence: normalizeConfidence(field.confidence),
+  }));
+}
+
+function normalizeRuleEvaluations(evaluations = []) {
+  if (!Array.isArray(evaluations)) return [];
+  return evaluations.map((evaluation) => ({
+    rule: String(evaluation.rule || ""),
+    passed: Boolean(evaluation.passed),
+    detail: String(evaluation.detail || ""),
+    confidence: normalizeConfidence(evaluation.confidence),
+  }));
 }
 function fileToOpenAIContent(file) {
   const base64 = file.buffer.toString("base64");

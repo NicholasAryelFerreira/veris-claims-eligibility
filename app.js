@@ -73,6 +73,17 @@ function updateBillField(bill, field, value) {
 function normalizeRuleText(value) {
   return String(value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 }
+
+function ruleLines(text = state.rulesText) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => line.replace(/^[\s\-*\d.)]+/, "").trim())
+    .filter(Boolean);
+}
+
+function normalizedInstructionsText(text = "") {
+  return ruleLines(text).join("\n");
+}
 const state = {
   uid: 100,
   poolIdx: 0,
@@ -216,10 +227,6 @@ function modelDescription(model = modelInfo()) {
   return model.meta || "Configured in .env";
 }
 
-function fieldConfidenceBase() {
-  return 96;
-}
-
 function fieldLabel(key) {
   return FIELD_META[key]?.label?.toLowerCase() || key.replace(/^custom_/, "").replace(/_/g, " ");
 }
@@ -239,18 +246,21 @@ function normalizeConfidence(value) {
 }
 
 function confidenceFor(bill, key) {
-  if (key === "__overall") {
-    const normalized = normalizeConfidence(bill.confidence);
-    if (normalized !== null) return normalized.toFixed(1);
-  }
-  const base = fieldConfidenceBase();
-  let hash = 0;
-  const input = `${bill.id || ""}${key}`;
-  for (let index = 0; index < input.length; index += 1) {
-    hash = (hash * 31 + input.charCodeAt(index)) % 1000;
-  }
-  const confidence = Math.max(82, Math.min(99.8, base + (hash / 1000 - 0.5) * 5));
-  return confidence.toFixed(1);
+  const source =
+    key === "__overall" ? bill.confidence : bill.fieldConfidences?.[key] ?? bill.customFieldConfidences?.[key];
+  const normalized = normalizeConfidence(source);
+  return normalized === null ? null : normalized.toFixed(1);
+}
+
+function confidenceBadge(bill, key) {
+  const confidence = confidenceFor(bill, key);
+  return confidence === null ? "" : `<span class="confidence">${confidence}%</span>`;
+}
+
+function extractionSummary(bill) {
+  const confidence = confidenceFor(bill, "__overall");
+  const model = escapeHtml(bill.modelUsed || modelLabel());
+  return confidence === null ? `Extracted with ${model} - confidence unavailable` : `Extracted with ${model} - ${confidence}% overall confidence`;
 }
 
 function fieldsFromText(line) {
@@ -394,7 +404,23 @@ function parseExtract(text) {
   return { fields, keys: fields.map((field) => field.key), unmatched: [] };
 }
 
+function modelRuleFlagsFor(bill) {
+  const currentRules = normalizedInstructionsText(state.rulesText);
+  if (!Array.isArray(bill.ruleEvaluations) || bill.analyzedRulesText !== currentRules) return null;
+
+  return bill.ruleEvaluations
+    .filter((evaluation) => evaluation && evaluation.passed === false)
+    .map((evaluation) => ({
+      label: evaluation.rule || "Eligibility rule",
+      detail: evaluation.detail || "The model found that this bill does not satisfy the rule.",
+      confidence: normalizeConfidence(evaluation.confidence),
+    }));
+}
+
 function evaluateBill(bill, parsedRules) {
+  const modelFlags = modelRuleFlagsFor(bill);
+  if (modelFlags) return modelFlags;
+
   const flags = [];
   const services = servicesFor(bill);
   parsedRules.forEach((rule) => {
@@ -695,7 +721,7 @@ function renderFields(bill) {
           <div class="field-header">
             <label for="${id}">${escapeHtml(field.label)}</label>
             ${isMissing ? `<span class="missing-pill">MISSING</span>` : ""}
-            <span class="confidence">${confidenceFor(bill, field.key)}%</span>
+            ${confidenceBadge(bill, field.key)}
           </div>
           ${input}
         </div>
@@ -716,7 +742,7 @@ function renderSelectionHeader(bill, evaluatedBill) {
     <div class="selection-header">
       <div class="selection-title">
         <strong>${escapeHtml(bill.fileName)}</strong>
-        <span>Extracted with ${escapeHtml(bill.modelUsed || modelLabel())} - ${confidenceFor(bill, "__overall")}% overall confidence</span>
+        <span>${extractionSummary(bill)}</span>
       </div>
       <div class="header-fill"></div>
       <span class="status-pill" style="color:${status.color};background:${status.bg}">
@@ -729,7 +755,7 @@ function renderSelectionHeader(bill, evaluatedBill) {
 
 function renderAnalysisColumn(bill, evaluatedBill) {
   const flagged = evaluatedBill.flags.length > 0;
-  const parsedRuleCount = parseRules(state.rulesText).filter((rule) => rule.ok).length;
+  const parsedRuleCount = ruleLines(state.rulesText).length;
   return `
     <div class="analysis-column">
       <div class="verdict ${flagged ? "flagged" : "eligible"}">
@@ -868,32 +894,41 @@ async function addFiles(files) {
   await Promise.all(newBills.map((bill) => analyzeBill(bill.id, bill.sourceFiles)));
 }
 
-function applyExtractedFields(billData) {
-  const fields = parseExtract(state.extractText).fields;
+function applyExtractedFields(billData, extractText = state.extractText) {
+  const fields = parseExtract(extractText).fields;
   const customFields = { ...(billData.customFields || {}) };
+  const fieldConfidences = { ...(billData.fieldConfidences || {}) };
+  const customFieldConfidences = { ...(billData.customFieldConfidences || {}) };
   const returned = Array.isArray(billData.extractedFields) ? billData.extractedFields : [];
 
   fields.forEach((field) => {
     const match = returned.find((item) => normalizeRuleText(item.label) === normalizeRuleText(field.sourceLabel || field.label));
     if (!match) return;
     const value = String(match.value ?? "");
+    const confidence = normalizeConfidence(match.confidence);
     if (KNOWN_FIELD_KEYS.has(field.key)) {
       billData[field.key] = value;
+      if (confidence !== null) fieldConfidences[field.key] = confidence;
     } else {
       customFields[field.key] = value;
+      if (confidence !== null) customFieldConfidences[field.key] = confidence;
     }
   });
 
   return {
     ...billData,
     customFields,
+    fieldConfidences,
+    customFieldConfidences,
   };
 }
 async function analyzeBill(id, pages) {
+  const rulesForAnalysis = state.rulesText;
+  const extractForAnalysis = state.extractText;
   const formData = new FormData();
   pages.forEach((page) => formData.append("pages", page, page.name));
-  formData.append("rulesText", state.rulesText);
-  formData.append("extractText", state.extractText);
+  formData.append("rulesText", rulesForAnalysis);
+  formData.append("extractText", extractForAnalysis);
   formData.append("model", state.model);
 
   try {
@@ -910,10 +945,12 @@ async function analyzeBill(id, pages) {
       bill.id === id
         ? {
             ...bill,
-            ...applyExtractedFields(payload.bill || {}),
+            ...applyExtractedFields(payload.bill || {}, extractForAnalysis),
             fileName: payload.fileName || bill.fileName,
             pageCount: payload.pageCount || bill.pageCount,
             modelUsed: payload.model,
+            analyzedRulesText: normalizedInstructionsText(rulesForAnalysis),
+            analyzedExtractText: normalizedInstructionsText(extractForAnalysis),
             status: "done",
           }
         : bill
