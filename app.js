@@ -84,6 +84,13 @@ function ruleLines(text = state.rulesText) {
 function normalizedInstructionsText(text = "") {
   return ruleLines(text).join("\n");
 }
+
+const DEFAULT_RULES_TEXT =
+  "Patient name must be present\nProvider name must be present\nDate of service must be present\nSupplements are not covered\nCosmetic procedures are not covered";
+const DEFAULT_EXTRACT_TEXT =
+  "Patient name\nProvider name\nProvider address\nDate of service\nServices provided\nTotal cost\nDiscounts";
+const DEFAULT_ANALYZED_RULES_TEXT = normalizedInstructionsText(DEFAULT_RULES_TEXT);
+
 const state = {
   uid: 100,
   poolIdx: 0,
@@ -111,6 +118,15 @@ const state = {
       servicesText: "Vitamin D3 supplement\nHerbal immune supplement\nWellness consultation",
       totalCost: "215",
       discounts: "0",
+      analyzedRulesText: DEFAULT_ANALYZED_RULES_TEXT,
+      ruleEvaluations: [
+        {
+          rule: "Supplements are not covered",
+          passed: false,
+          detail: "The bill lists Vitamin D3 supplement and Herbal immune supplement as visible service line items.",
+          confidence: 96,
+        },
+      ],
     },
     {
       id: "b3",
@@ -147,16 +163,23 @@ const state = {
       servicesText: "Botox cosmetic injection\nDermal filler",
       totalCost: "680",
       discounts: "0",
+      analyzedRulesText: DEFAULT_ANALYZED_RULES_TEXT,
+      ruleEvaluations: [
+        {
+          rule: "Cosmetic procedures are not covered",
+          passed: false,
+          detail: "The bill lists Botox cosmetic injection and Dermal filler as visible service line items.",
+          confidence: 97,
+        },
+      ],
     },
   ],
   selectedId: "b1",
   filter: "all",
   model: "",
   models: [],
-  rulesText:
-    "Patient name must be present\nProvider name must be present\nDate of service must be present\nSupplements are not covered\nCosmetic procedures are not covered",
-  extractText:
-    "Patient name\nProvider name\nProvider address\nDate of service\nServices provided\nTotal cost\nDiscounts",
+  rulesText: DEFAULT_RULES_TEXT,
+  extractText: DEFAULT_EXTRACT_TEXT,
   dragging: false,
   modelMenuOpen: false,
   rulesOpen: window.location.hash === "#rules",
@@ -873,6 +896,19 @@ async function addFiles(files) {
   await Promise.all(newBills.map((bill) => analyzeBill(bill.id, bill.sourceFiles)));
 }
 
+function mockBillText(bill) {
+  return [
+    `File name: ${bill.fileName || "mock-bill"}`,
+    `Patient name: ${bill.patientName || ""}`,
+    `Provider name: ${bill.providerName || ""}`,
+    `Provider address: ${bill.providerAddress || ""}`,
+    `Date of service: ${bill.dateOfService || ""}`,
+    "Services provided:",
+    servicesFor(bill).join("\n"),
+    `Total cost: ${bill.totalCost || ""}`,
+    `Discounts: ${bill.discounts || ""}`,
+  ].join("\n");
+}
 function applyExtractedFields(billData, extractText = state.extractText) {
   const fields = parseExtract(extractText).fields;
   const customFields = { ...(billData.customFields || {}) };
@@ -901,11 +937,15 @@ function applyExtractedFields(billData, extractText = state.extractText) {
     customFieldConfidences,
   };
 }
-async function analyzeBill(id, pages) {
+async function analyzeBill(id, pages = [], billSnapshot = null) {
   const rulesForAnalysis = state.rulesText;
   const extractForAnalysis = state.extractText;
   const formData = new FormData();
   pages.forEach((page) => formData.append("pages", page, page.name));
+  if (!pages.length && billSnapshot) {
+    formData.append("billText", mockBillText(billSnapshot));
+    formData.append("billFileName", billSnapshot.fileName || "mock-bill");
+  }
   formData.append("rulesText", rulesForAnalysis);
   formData.append("extractText", extractForAnalysis);
   formData.append("model", state.model);
@@ -935,7 +975,8 @@ async function analyzeBill(id, pages) {
         : bill
     );
     render();
-    flash(`Analyzed ${payload.pageCount || pages.length} page${(payload.pageCount || pages.length) === 1 ? "" : "s"} with OpenAI`);
+    const analyzedCount = payload.pageCount || pages.length || 1;
+    flash(`Analyzed ${analyzedCount} page${analyzedCount === 1 ? "" : "s"} with OpenAI`);
   } catch (error) {
     state.bills = state.bills.map((bill) =>
       bill.id === id ? { ...bill, status: "error", error: error.message || "OpenAI analysis failed." } : bill
@@ -949,16 +990,13 @@ async function reRunSelectedBill() {
   const bill = state.bills.find((item) => item.id === state.selectedId);
   if (!bill) return;
 
-  if (!bill.sourceFiles || !bill.sourceFiles.length) {
-    flash("Upload pages are required to re-run OpenAI analysis");
-    return;
-  }
+  const sourceFiles = bill.sourceFiles || [];
 
   state.bills = state.bills.map((item) =>
     item.id === bill.id ? { ...item, status: "processing", error: null } : item
   );
   render();
-  await analyzeBill(bill.id, bill.sourceFiles);
+  await analyzeBill(bill.id, sourceFiles, sourceFiles.length ? null : bill);
 }
 function exportCsv() {
   const bills = evaluatedBills().filter((bill) => bill.status !== "processing" && bill.status !== "error");

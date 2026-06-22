@@ -113,8 +113,9 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
     }
 
     const pages = req.files || [];
-    if (!pages.length) {
-      res.status(400).json({ error: "Upload at least one bill document." });
+    const billText = String(req.body.billText || "").trim();
+    if (!pages.length && !billText) {
+      res.status(400).json({ error: "Upload at least one bill document or provide mock bill text." });
       return;
     }
 
@@ -122,7 +123,8 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
     const extractText = String(req.body.extractText || "").trim();
     const requestedModel = String(req.body.model || "").trim();
     const selectedModel = modelById(requestedModel) || DEFAULT_MODEL;
-    const pageNames = pages.map((file) => file.originalname).join(", ");
+    const mockFileName = String(req.body.billFileName || "mock-bill").trim();
+    const pageNames = pages.length ? pages.map((file) => file.originalname).join(", ") : mockFileName;
 
     const content = [
       {
@@ -149,6 +151,8 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
           "",
           "Fields requested by the reviewer:",
           extractText || "(default bill fields)",
+          "",
+          ...(billText ? ["Mock bill text supplied by the app:", billText] : []),
         ].join("\n"),
       },
       ...pages.map(fileToOpenAIContent),
@@ -189,8 +193,8 @@ app.post("/api/analyze-bill", upload.array("pages", MAX_PAGES), async (req, res,
         notes: parsed.notes || "",
       },
       model: selectedModel.id,
-      pageCount: pages.length,
-      fileName: pages.length === 1 ? pages[0].originalname : `${pages[0].originalname} + ${pages.length - 1} page(s)`,
+      pageCount: pages.length || 1,
+      fileName: pages.length === 1 ? pages[0].originalname : pages.length > 1 ? `${pages[0].originalname} + ${pages.length - 1} page(s)` : mockFileName,
     });
   } catch (error) {
     next(error);
