@@ -2,8 +2,13 @@
 
 OpenAI-backed implementation of the medical bill eligibility analyzer handoff. The app lets a reviewer load one or more bill documents, extract claim fields with an OpenAI model, edit extracted values, tune plain-English eligibility rules, and export a CSV that opens cleanly in Excel.
 
-## Run locally
+## Screenshots
 
+![Veris dashboard showing bill review, source document preview, and extracted fields](assets/screenshots/dashboard.png)
+
+![Veris analysis instructions drawer with rules and fields configuration](assets/screenshots/rules-fields.png)
+
+## Run locally
 1. Open PowerShell.
 2. Go to the project directory:
 
@@ -51,3 +56,7 @@ Each model option is `model-id|Description`, and options are separated with semi
 - Plain-English rule parser for required fields and excluded service categories.
 - Flagged/eligible filters.
 - CSV export named `eligibility-results.csv`.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
