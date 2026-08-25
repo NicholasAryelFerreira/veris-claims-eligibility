@@ -10,7 +10,13 @@ import { z } from "zod";
 const PORT = Number(process.env.PORT || 4173);
 const MAX_PAGES = Number(process.env.MAX_BILL_PAGES || 12);
 const MAX_FILE_SIZE = Number(process.env.MAX_FILE_SIZE_BYTES || 12 * 1024 * 1024);
-const FALLBACK_MODEL_ID = process.env.OPENAI_MODEL || "gpt-5.5";
+const BUILTIN_MODELS = [
+  { id: "gpt-5.6-luna", meta: "Efficient - high volume" },
+  { id: "gpt-5.5", meta: "Highest accuracy - slower" },
+  { id: "gpt-5.4-mini", meta: "Fast - high accuracy" },
+  { id: "gpt-5.4-nano", meta: "Lowest cost - fastest" },
+];
+const FALLBACK_MODEL_ID = process.env.OPENAI_MODEL || BUILTIN_MODELS[0].id;
 const MODELS = parseModelOptions(process.env.OPENAI_MODEL_OPTIONS, FALLBACK_MODEL_ID);
 const DEFAULT_MODEL = chooseDefaultModel(process.env.OPENAI_MODEL, MODELS);
 
@@ -273,12 +279,15 @@ function parseModelOptions(raw, fallbackModelId) {
     .filter(Boolean);
 
   if (parsed.length) return parsed;
-  return [
-    {
+
+  const models = BUILTIN_MODELS.map((model) => ({ ...model }));
+  if (fallbackModelId && !models.some((model) => model.id === fallbackModelId)) {
+    models.unshift({
       id: fallbackModelId,
       meta: "Configured by OPENAI_MODEL",
-    },
-  ];
+    });
+  }
+  return models;
 }
 
 function chooseDefaultModel(id, models) {
