@@ -2,7 +2,7 @@ const FIELD_META = {
   patientName: { label: "Patient name" },
   providerName: { label: "Provider name" },
   providerAddress: { label: "Provider address" },
-  dateOfService: { label: "Date of service" },
+  dateOfService: { label: "Date of service or purchase" },
   servicesText: { label: "Services provided", multiline: true },
   totalCost: { label: "Total cost", prefix: true },
   discounts: { label: "Discounts", prefix: true },
@@ -86,9 +86,9 @@ function normalizedInstructionsText(text = "") {
 }
 
 const DEFAULT_RULES_TEXT =
-  "Patient name must be present\nProvider name must be present\nDate of service must be present\nSupplements are not covered\nCosmetic procedures are not covered";
+  "Patient name must be present\nProvider name must be present\nDate of service or purchase must be present\nSupplements are not covered\nCosmetic procedures are not covered";
 const DEFAULT_EXTRACT_TEXT =
-  "Patient name\nProvider name\nProvider address\nDate of service\nServices provided\nTotal cost\nDiscounts";
+  "Patient name\nProvider name\nProvider address\nDate of service or purchase\nServices provided\nTotal cost\nDiscounts";
 const DEFAULT_ANALYZED_RULES_TEXT = normalizedInstructionsText(DEFAULT_RULES_TEXT);
 
 const state = {
@@ -683,7 +683,7 @@ function renderPaper(bill) {
           <strong>${escapeHtml(bill.patientName || "-")}</strong>
         </div>
         <div>
-          <div class="paper-label">Date of service</div>
+          <div class="paper-label">Date of service or purchase</div>
           <strong>${escapeHtml(formatDate(bill.dateOfService))}</strong>
         </div>
       </div>
@@ -938,7 +938,7 @@ function mockBillText(bill) {
     `Patient name: ${bill.patientName || ""}`,
     `Provider name: ${bill.providerName || ""}`,
     `Provider address: ${bill.providerAddress || ""}`,
-    `Date of service: ${bill.dateOfService || ""}`,
+    `Date of service or purchase: ${bill.dateOfService || ""}`,
     "Services provided:",
     servicesFor(bill).join("\n"),
     `Total cost: ${bill.totalCost || ""}`,
